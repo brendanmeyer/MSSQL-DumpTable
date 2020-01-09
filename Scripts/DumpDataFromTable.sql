@@ -10,14 +10,16 @@ SET QUOTED_IDENTIFIER ON
 GO
  
 -- =============================================
--- Author:    Oleg Ciobanu
+-- Author: Brendan Meyer
+-- Original Author:    Oleg Ciobanu
 -- Create date: 20171214
--- Version 1.02
+-- Version 1.03
 -- Description:
 -- dump data in 2 formats
 -- @BuildMethod = 1 INSERT INTO format
 -- @BuildMethod = 2 SELECT * FROM format
 --
+-- Below is only needed if you want to create files from SQL Server - otherwise PS Script can create the files.
 -- SQL must have permission to create files, if is not set-up then exec follow line once
 -- EXEC sp_configure 'Ole Automation Procedures', 1; RECONFIGURE WITH OVERRIDE;
 --
@@ -28,7 +30,7 @@ CREATE PROCEDURE [dbo].[DumpDataFromTable]
     ,@TableName nvarchar(128) --= 'testTable'
     ,@WhereClause nvarchar (1000) = '' -- must start with AND
     ,@BuildMethod int = 1 -- taking values 1 for INSERT INTO forrmat or 2 for SELECT from value Table
-    ,@PathOut nvarchar(250) = N'c:\tmp\scripts\' -- folder must exist !!!'
+    ,@PathOut nvarchar(250) = NULL --N'c:\tmp\scripts\' -- folder must exist !!!'
     ,@AsFileNAme nvarchar(250) = NULL -- if is passed then will use this value as FileName
     ,@DebugMode int = 0
 )
@@ -43,92 +45,104 @@ BEGIN
     DECLARE @SqlInsert nvarchar (max) = ''
     DECLARE @Columns nvarchar(max)
     DECLARE @ColumnsCast nvarchar(max)
- 
+
+	DECLARE @ToFile bit = IIF (@PathOut IS NULL, 0, 1)
+
     -- cleanUp/prepraring data
     SET @SchemaName = REPLACE(REPLACE(@SchemaName,'[',''),']','')
     SET @TableName = REPLACE(REPLACE(@TableName,'[',''),']','')
-    SET @AsFileNAme = NULLIF(@AsFileNAme,'')
-    SET @AsFileNAme = REPLACE(@AsFileNAme,'.','_')
-    SET @AsFileNAme = COALESCE(@PathOut + @AsFileNAme + '.sql', @PathOut + @SchemaName + ISNULL('_' + @TableName,N'') + '.sql')
+	IF @ToFile = 1 BEGIN
+		SET @AsFileNAme = NULLIF(@AsFileNAme,'')
+		SET @AsFileNAme = REPLACE(@AsFileNAme,'.','_')
+		SET @AsFileNAme = COALESCE(@PathOut + @AsFileNAme + '.sql', @PathOut + @SchemaName + ISNULL('_' + @TableName,N'') + '.sql')
  
- 
-    --debug
-    IF @DebugMode = 1
-        PRINT @AsFileNAme
- 
+		--debug
+		IF @DebugMode = 1
+			PRINT '@AsFileNAme: ' + @AsFileNAme
+
         -- Create temp SP what will be responsable for generating script files
-    DECLARE @PRC_WritereadFile VARCHAR(max) =
-        'IF EXISTS (SELECT * FROM sys.objects WHERE type = ''P'' AND name = ''PRC_WritereadFile'')
-       BEGIN
-          DROP  Procedure  PRC_WritereadFile
-       END;'
-    EXEC  (@PRC_WritereadFile)
-       -- '  
-    SET @PRC_WritereadFile =
-    'CREATE Procedure PRC_WritereadFile (
-        @FileMode INT -- Recreate = 0 or Append Mode 1
-       ,@Path NVARCHAR(1000)
-       ,@AsFileNAme NVARCHAR(500)
-       ,@FileBody NVARCHAR(MAX)   
-       )
-    AS
-        DECLARE @OLEResult INT
-        DECLARE @FS INT
-        DECLARE @FileID INT
-        DECLARE @hr INT
-        DECLARE @FullFileName NVARCHAR(1500) = @Path + @AsFileNAme
+		DECLARE @PRC_WritereadFile VARCHAR(max) =
+			'IF EXISTS (SELECT * FROM sys.objects WHERE type = ''P'' AND name = ''PRC_WritereadFile'')
+		   BEGIN
+			  DROP  Procedure  PRC_WritereadFile
+		   END;'
+		EXEC  (@PRC_WritereadFile)
+		   -- '  
+		SET @PRC_WritereadFile =
+		'CREATE Procedure PRC_WritereadFile (
+			@FileMode INT -- Recreate = 0 or Append Mode 1
+		   ,@Path NVARCHAR(1000)
+		   ,@AsFileNAme NVARCHAR(500)
+		   ,@FileBody NVARCHAR(MAX)   
+		   )
+		AS
+			DECLARE @OLEResult INT
+			DECLARE @FS INT
+			DECLARE @FileID INT
+			DECLARE @hr INT
+			DECLARE @FullFileName NVARCHAR(1500) = @Path + @AsFileNAme
      
-        -- Create Object
-        EXECUTE @OLEResult = sp_OACreate ''Scripting.FileSystemObject'', @FS OUTPUT
-        IF @OLEResult <> 0 BEGIN
-            PRINT ''Scripting.FileSystemObject''
-            GOTO Error_Handler
-        END    
+			-- Create Object
+			EXECUTE @OLEResult = sp_OACreate ''Scripting.FileSystemObject'', @FS OUTPUT
+			IF @OLEResult <> 0 BEGIN
+				PRINT ''Scripting.FileSystemObject''
+				GOTO Error_Handler
+			END    
  
-        IF @FileMode = 0 BEGIN  -- Create
-            EXECUTE @OLEResult = sp_OAMethod @FS,''CreateTextFile'',@FileID OUTPUT, @FullFileName
-            IF @OLEResult <> 0 BEGIN
-                PRINT ''CreateTextFile''
-                GOTO Error_Handler
-            END
-        END ELSE BEGIN          -- Append
-            EXECUTE @OLEResult = sp_OAMethod @FS,''OpenTextFile'',@FileID OUTPUT, @FullFileName, 8, 0 -- 8- forappending
-            IF @OLEResult <> 0 BEGIN
-                PRINT ''OpenTextFile''
-                GOTO Error_Handler
-            END            
-        END
+			IF @FileMode = 0 BEGIN  -- Create
+				EXECUTE @OLEResult = sp_OAMethod @FS,''CreateTextFile'',@FileID OUTPUT, @FullFileName
+				IF @OLEResult <> 0 BEGIN
+					PRINT ''CreateTextFile''
+					GOTO Error_Handler
+				END
+			END ELSE BEGIN          -- Append
+				EXECUTE @OLEResult = sp_OAMethod @FS,''OpenTextFile'',@FileID OUTPUT, @FullFileName, 8, 0 -- 8- forappending
+				IF @OLEResult <> 0 BEGIN
+					PRINT ''OpenTextFile''
+					GOTO Error_Handler
+				END            
+			END
      
-        EXECUTE @OLEResult = sp_OAMethod @FileID, ''WriteLine'', NULL, @FileBody
-        IF @OLEResult <> 0 BEGIN
-            PRINT ''WriteLine''
-            GOTO Error_Handler
-        END     
+			EXECUTE @OLEResult = sp_OAMethod @FileID, ''WriteLine'', NULL, @FileBody
+			IF @OLEResult <> 0 BEGIN
+				PRINT ''WriteLine''
+				GOTO Error_Handler
+			END     
  
-        EXECUTE @OLEResult = sp_OAMethod @FileID,''Close''
-        IF @OLEResult <> 0 BEGIN
-            PRINT ''Close''
-            GOTO Error_Handler
-        END
+			EXECUTE @OLEResult = sp_OAMethod @FileID,''Close''
+			IF @OLEResult <> 0 BEGIN
+				PRINT ''Close''
+				GOTO Error_Handler
+			END
      
-        EXECUTE sp_OADestroy @FS
-        EXECUTE sp_OADestroy @FileID
+			EXECUTE sp_OADestroy @FS
+			EXECUTE sp_OADestroy @FileID
      
-        GOTO Done
+			GOTO Done
  
-        Error_Handler:
-            DECLARE @source varchar(30), @desc varchar (200)       
-            EXEC @hr = sp_OAGetErrorInfo null, @source OUT, @desc OUT
-            PRINT ''*** ERROR ***''
-            SELECT OLEResult = @OLEResult, hr = CONVERT (binary(4), @hr), source = @source, description = @desc
+			Error_Handler:
+				DECLARE @source varchar(30), @desc varchar (200)       
+				EXEC @hr = sp_OAGetErrorInfo null, @source OUT, @desc OUT
+				PRINT ''*** ERROR ***''
+				SELECT OLEResult = @OLEResult, hr = CONVERT (binary(4), @hr), source = @source, description = @desc
  
-       Done:
-    ';
-        -- '
-    EXEC  (@PRC_WritereadFile) 
-    EXEC PRC_WritereadFile 0 /*Create*/, '', @AsFileNAme, ''
-     
- 
+		   Done:
+		';
+			-- '
+		EXEC  (@PRC_WritereadFile) 
+		EXEC PRC_WritereadFile 0 /*Create*/, '', @AsFileNAme, ''
+	END
+    ELSE BEGIN
+		-- create temp table 1 for the 
+		IF OBJECT_ID('tempdb..#tmp1') IS NOT NULL
+			DROP TABLE #tmp1
+		CREATE TABLE #tmp1
+		(
+			ColumnValue nvarchar (MAX)
+		)
+	END
+
+
     ;WITH steColumns AS (
         SELECT
             1 as rn,
@@ -141,32 +155,31 @@ BEGIN
         AND c.TABLE_NAME = @TableName
     )
  
-    --SELECT *
- 
-       SELECT
-            @ColumnsCast = ( SELECT
-                                    CASE WHEN ColumnType IN ('date','time','datetime2','datetimeoffset','smalldatetime','datetime','timestamp')
-                                        THEN
-                                            'convert(nvarchar(1001), s.[' + ColumnName + ']' + ' , 121) AS [' + ColumnName + '],'
-                                            --,convert(nvarchar, [DateTimeScriptApplied], 121) as [DateTimeScriptApplied]
-                                        ELSE
-                                            'CAST(s.[' + ColumnName + ']' + ' AS NVARCHAR(1001)) AS [' + ColumnName + '],'
-                                    END
-                                     as 'data()'                                  
-                                    FROM
-                                      steColumns t2
-                                    WHERE 1 =1
-                                      AND t1.rn = t2.rn
-                                    FOR xml PATH('')
-                                   )
-            ,@Columns = ( SELECT
-                                    '[' + ColumnName + '],' as 'data()'                                  
-                                    FROM
-                                      steColumns t2
-                                    WHERE 1 =1
-                                      AND t1.rn = t2.rn
-                                    FOR xml PATH('')
-                                   )
+    SELECT
+        @ColumnsCast = ( SELECT
+                                CASE 
+									WHEN ColumnType IN ('date','time','datetime2','datetimeoffset','smalldatetime','datetime','timestamp') THEN
+                                        'convert(nvarchar(1001), s.[' + ColumnName + ']' + ' , 121) AS [' + ColumnName + '], '
+									WHEN ColumnType IN ('varbinary','binary') THEN
+										'convert(nvarchar(1001), s.[' + ColumnName + ']' + ' , 2) AS [' + ColumnName + '], '
+                                    ELSE
+                                        'CAST(s.[' + ColumnName + ']' + ' AS NVARCHAR(1001)) AS [' + ColumnName + '], '
+                                END
+                                    as 'data()'                                  
+                                FROM
+                                    steColumns t2
+                                WHERE 1 = 1
+                                    AND t1.rn = t2.rn
+                                FOR xml PATH('')
+                                )
+        ,@Columns = ( SELECT
+                                '[' + ColumnName + '], ' as 'data()'                                  
+                                FROM
+                                    steColumns t2
+                                WHERE 1 = 1
+                                    AND t1.rn = t2.rn
+                                FOR xml PATH('')
+                                )
  
     FROM steColumns t1
  
@@ -180,7 +193,7 @@ BEGIN
     IF @DebugMode = 1 BEGIN
         print @ColumnsCast
         print @Columns
-        select @ColumnsCast ,  @Columns
+        select @ColumnsCast,  @Columns
     END
  
     -- build unpivoted Data
@@ -224,7 +237,6 @@ BEGIN
     END
  
     -- prepare data for cursor
- 
     IF OBJECT_ID('tempdb..#tmp') IS NOT NULL
         DROP TABLE #tmp
     CREATE TABLE #tmp
@@ -244,10 +256,10 @@ BEGIN
  
     EXEC (@Sql)
 													    
- -- Insert dummy rec, otherwise will not proceed the last rec :)
-INSERT INTO #tmp (rn)
-SELECT MAX(rn) +  1 
-FROM #tmp	
+	-- Insert dummy rec, otherwise will not proceed the last rec :)
+	INSERT INTO #tmp (rn)
+	SELECT MAX(rn) +  1 
+	FROM #tmp	
 													    
     IF @DebugMode = 1 BEGIN
         SELECT * FROM #tmp
@@ -270,11 +282,14 @@ FROM #tmp
  
     FETCH NEXT FROM cur
     INTO @rn, @ColumnPosition, @ColumnType, @ColumnName, @ColumnValue
- 
+
     IF @BuildMethod = 1
     BEGIN
     	SET @SqlInsert = 'SET NOCOUNT ON;' + CHAR(13);
-		EXEC PRC_WritereadFile 1 /*Add*/, '', @AsFileName, @SqlInsert
+		IF @ToFile = 1
+			EXEC PRC_WritereadFile 1 /*Add*/, '', @AsFileNAme, @SqlInsert
+		ELSE
+			INSERT INTO #tmp1 VALUES (@SqlInsert)
         SET @SqlInsert = ''
     END
     ELSE BEGIN
@@ -283,7 +298,10 @@ FROM #tmp
 						+ 'SELECT *'
                         + CHAR(13) + 'FROM ('
                         + CHAR(13) + 'VALUES'
-        EXEC PRC_WritereadFile 1 /*Add*/, '', @AsFileName, @SqlInsert
+		IF @ToFile = 1
+			EXEC PRC_WritereadFile 1 /*Add*/, '', @AsFileNAme, @SqlInsert
+		ELSE
+			INSERT INTO #tmp1 VALUES (@SqlInsert)
         SET @SqlInsert = NULL
     END
  
@@ -298,10 +316,10 @@ FROM #tmp
             -- build as INSERT INTO -- as Default
             BEGIN
                 SET @SqlInsert = 'INSERT INTO [' + @SchemaName + '].[' + @TableName + '] ('
-                                + CHAR(13) + @ColumnsInsert + ')'
-                                + CHAR(13) + 'VALUES ('
+                                + @ColumnsInsert + ')'
+                                + ' VALUES ('
                                 + @ValuesInsert
-                                + CHAR(13) + ');'
+                                + ');'
             END
             ELSE
             BEGIN
@@ -309,14 +327,20 @@ FROM #tmp
                 IF (@i <> @rn) -- is a new row
                 BEGIN
                     SET @SqlInsert = COALESCE(@SqlInsert + ',','') +  '(' + @ValuesInsert+ ')'
-                    EXEC PRC_WritereadFile 1 /*Add*/, '', @AsFileNAme, @SqlInsert
+					IF @ToFile = 1
+						EXEC PRC_WritereadFile 1 /*Add*/, '', @AsFileNAme, @SqlInsert
+					ELSE
+						INSERT INTO #tmp1 VALUES (@SqlInsert)
                     SET @SqlInsert = '' -- in method 2 we should clear script
                 END            
             END
             -- debug
             IF @DebugMode = 1
                 print @SqlInsert
-            EXEC PRC_WritereadFile 1 /*Add*/, '', @AsFileNAme, @SqlInsert
+			IF @ToFile = 1
+				EXEC PRC_WritereadFile 1 /*Add*/, '', @AsFileNAme, @SqlInsert
+			ELSE
+				INSERT INTO #tmp1 VALUES (@SqlInsert)
  
             -- we have new row
             -- initialise variables
@@ -328,22 +352,15 @@ FROM #tmp
         -- build insert values
         IF (@i = @rn) -- is same row
         BEGIN
-            SET @ColumnsInsert = COALESCE(@ColumnsInsert + ',','') + '[' + @ColumnName + ']'
+            SET @ColumnsInsert = COALESCE(@ColumnsInsert + ', ','') + '[' + @ColumnName + ']'
             SET @ValuesInsert =  CASE                              
-                                    -- date
-                                    --WHEN
-                                    --  @ColumnType IN ('date','time','datetime2','datetimeoffset','smalldatetime','datetime','timestamp')
-                                    --THEN
-                                    --  COALESCE(@ValuesInsert + ',','') + '''''' + ISNULL(RTRIM(@ColumnValue),'NULL') + ''''''
-                                    -- numeric
-                                    WHEN
-                                        @ColumnType IN ('bit','tinyint','smallint','int','bigint'
-                                                        ,'money','real','','float','decimal','numeric','smallmoney')
-                                    THEN
-                                        COALESCE(@ValuesInsert + ',','') + '' + ISNULL(RTRIM(@ColumnValue),'NULL') + ''
+                                    WHEN @ColumnType IN ('bit','tinyint','smallint','int','bigint','money','real','','float','decimal','numeric','smallmoney') THEN
+                                        COALESCE(@ValuesInsert + ', ','') + '' + ISNULL(RTRIM(@ColumnValue),'NULL') + ''
+									WHEN @ColumnType IN ('varbinary','binary') THEN
+										COALESCE(@ValuesInsert + ', ','') + '0x' + ISNULL(RTRIM(convert(nvarchar(1001), @ColumnValue, 2)),'NULL') + ''
                                     -- other types treat as string
                                     ELSE
-										COALESCE(@ValuesInsert + ',','') + '''' + ISNULL(RTRIM( 
+										COALESCE(@ValuesInsert + ', ','') + '''' + ISNULL(RTRIM( 
 																							-- escape single quote
 																							REPLACE(@ColumnValue, '''', '''''') 
 																							  ),'NULL') + ''''		   
@@ -371,8 +388,16 @@ FROM #tmp
         SET @SqlInsert = CHAR(13) + ') AS vtable '
                         + CHAR(13) + ' (' + @Columns
                         + CHAR(13) + ')'
-        EXEC PRC_WritereadFile 1 /*Add*/, '', @AsFileNAme, @SqlInsert
+		IF @ToFile = 1
+			EXEC PRC_WritereadFile 1 /*Add*/, '', @AsFileNAme, @SqlInsert
+		ELSE
+			INSERT INTO #tmp1 VALUES (@SqlInsert)
         SET @SqlInsert = NULL
     END
-	PRINT 'Done: ' + @AsFileNAme
+	IF @ToFile = 1
+		PRINT 'Done: ' + @AsFileNAme
+	ELSE BEGIN
+		SELECT * FROM #tmp1
+		PRINT 'Done'
+	END
 END
